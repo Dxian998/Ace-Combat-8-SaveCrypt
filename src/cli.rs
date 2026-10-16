@@ -1,4 +1,7 @@
-use crate::crypto::{compute_payload_crc, Crypto, REGISTERED_KEYS};
+use crate::crypto::{
+    compute_campaign_chksm, compute_payload_crc, Crypto, CAMPAIGN_CRC_SEED,
+    REGISTERED_KEYS,
+};
 use crate::gvas::{decode_b64, FullSaveJson, GvasParser};
 use crate::msd::MsdManager;
 use std::fs;
@@ -147,11 +150,23 @@ impl Cli {
                     println!("Encryption:      None (Standard Unencrypted UE5 Save)");
                     if let Some(p) = info.packed {
                         println!("PackedData Size: {} bytes (offset 0x{:x})", p.len, p.offset);
+                        let packed_slice = &data[p.offset..p.end()];
+                        if let Some(exp_crc) = info.expected_crc32 {
+                            println!("Header Checksum: 0x{:08X}", exp_crc);
+                            let (valid, matched_crc) = Crypto::validate_crc(exp_crc, packed_slice);
+                            let computed = compute_campaign_chksm(packed_slice);
+                            println!("Computed Checksum: 0x{:08X} (Seed: 0x{:08X})", computed, CAMPAIGN_CRC_SEED);
+                            if valid {
+                                println!("Verification:    SUCCESS (Checksum 0x{:08X} matched)", matched_crc);
+                            } else {
+                                println!("Verification:    MISMATCH (Expected 0x{:08X}, Computed 0x{:08X})", exp_crc, computed);
+                            }
+                        } else {
+                            println!("Verification:    SUCCESS (Valid unencrypted GVAS container)");
+                        }
+                    } else {
+                        println!("Verification:    SUCCESS (Valid unencrypted GVAS container)");
                     }
-                    if let Some(exp_crc) = info.expected_crc32 {
-                        println!("Header Checksum: 0x{:08X}", exp_crc);
-                    }
-                    println!("Verification:    SUCCESS (Valid unencrypted GVAS container)");
                     return Ok(());
                 }
 
@@ -280,7 +295,7 @@ impl Cli {
 
                     if let Some(tpl_path) = template {
                         let tpl_data = fs::read(&tpl_path)?;
-                        let final_sav = GvasParser::rebuild_gvas_from_template(&tpl_data, &new_envelope, &payload_bytes)?;
+                        let final_sav = GvasParser::rebuild_gvas_from_template(&tpl_data, &new_envelope, Some(&payload_bytes))?;
                         fs::write(&output, final_sav)?;
                         println!("Rebuilt GVAS:    {} (using template {})", output.display(), tpl_path.display());
                     } else if let (Some(h), Some(t)) = (stored_header, stored_tail) {
@@ -303,7 +318,7 @@ impl Cli {
                     if let Ok(full_json) = serde_json::from_str::<FullSaveJson>(&content) {
                         let header = decode_b64(&full_json.header_b64)?;
                         let tail = decode_b64(&full_json.tail_b64)?;
-                        let payload = decode_b64(&full_json.payload_b64)?;
+                        let payload = full_json.get_payload_bytes()?;
 
                         let final_sav = GvasParser::rebuild_from_header_tail(&header, &tail, &payload, None)?;
                         fs::write(&output, final_sav)?;
@@ -313,22 +328,36 @@ impl Cli {
                     }
                 }
 
-                let plaintext = fs::read(&input)?;
-                let new_envelope = Crypto::pack_envelope(&plaintext, &key_id, None)?;
+                let raw_payload = fs::read(&input)?;
 
                 if let Some(tpl_path) = template {
                     let tpl_data = fs::read(&tpl_path)?;
-                    let final_sav = GvasParser::rebuild_gvas_from_template(&tpl_data, &new_envelope, &plaintext)?;
-                    fs::write(&output, final_sav)?;
-                    println!("Rebuilt GVAS:    {}", output.display());
+                    let tpl_info = GvasParser::inspect(&tpl_data)?;
+
+                    if tpl_info.is_encrypted {
+                        let new_envelope = Crypto::pack_envelope(&raw_payload, &key_id, None)?;
+                        let final_sav = GvasParser::rebuild_gvas_from_template(&tpl_data, &new_envelope, Some(&raw_payload))?;
+                        fs::write(&output, final_sav)?;
+                        let computed_crc = compute_payload_crc(&raw_payload);
+                        println!("Key ID:          {}", String::from_utf8_lossy(&key_id));
+                        println!("CRC-32:          0x{:08X}", computed_crc);
+                        println!("Rebuilt GVAS:    {} (Encrypted)", output.display());
+                    } else {
+                        let final_sav = GvasParser::rebuild_gvas_from_template(&tpl_data, &raw_payload, None)?;
+                        fs::write(&output, final_sav)?;
+                        let computed_chk = compute_campaign_chksm(&raw_payload);
+                        println!("Checksum:        0x{:08X} (Seed: 0x{:08X})", computed_chk, CAMPAIGN_CRC_SEED);
+                        println!("Rebuilt GVAS:    {} (Unencrypted)", output.display());
+                    }
                 } else {
+                    let new_envelope = Crypto::pack_envelope(&raw_payload, &key_id, None)?;
                     fs::write(&output, &new_envelope)?;
+                    let computed_crc = compute_payload_crc(&raw_payload);
+                    println!("Key ID:          {}", String::from_utf8_lossy(&key_id));
+                    println!("CRC-32:          0x{:08X}", computed_crc);
                     println!("Packed Envelope: {}", output.display());
                 }
 
-                let computed_crc = compute_payload_crc(&plaintext);
-                println!("Key ID:          {}", String::from_utf8_lossy(&key_id));
-                println!("CRC-32:          0x{:08X}", computed_crc);
                 println!("Saved to:        {}", output.display());
                 Ok(())
             }

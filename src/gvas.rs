@@ -1,5 +1,5 @@
 use base64::prelude::*;
-use crate::crypto::{compute_payload_crc, crc32, REGISTERED_KEYS};
+use crate::crypto::{compute_campaign_chksm, compute_payload_crc, crc32, REGISTERED_KEYS};
 use serde::{Deserialize, Serialize};
 
 pub const GVAS_MAGIC: &[u8; 4] = b"GVAS";
@@ -39,8 +39,23 @@ pub struct FullSaveJson {
     pub class_name: String,
     pub header_b64: String,
     pub tail_b64: String,
-    pub payload_b64: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_json: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_b64: Option<String>,
     pub payload_size: usize,
+}
+
+impl FullSaveJson {
+    pub fn get_payload_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        if let Some(ref j) = self.payload_json {
+            Ok(serde_json::to_vec_pretty(j)?)
+        } else if let Some(ref b64) = self.payload_b64 {
+            decode_b64(b64)
+        } else {
+            Err(anyhow::anyhow!("FullSaveJson has neither payload_json nor payload_b64"))
+        }
+    }
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
@@ -257,12 +272,19 @@ impl GvasParser {
             "UnknownSaveGame".to_string()
         };
 
+        let (payload_json, payload_b64) = if let Ok(val) = serde_json::from_slice::<serde_json::Value>(payload_slice) {
+            (Some(val), None)
+        } else {
+            (None, Some(encode_b64(payload_slice)))
+        };
+
         Ok(FullSaveJson {
             file_type: if info.is_encrypted { "EncryptedGVAS".to_string() } else { "PlaintextGVAS".to_string() },
             class_name,
             header_b64: encode_b64(header_slice),
             tail_b64: encode_b64(tail_slice),
-            payload_b64: encode_b64(payload_slice),
+            payload_json,
+            payload_b64,
             payload_size: payload_slice.len(),
         })
     }
@@ -300,13 +322,18 @@ impl GvasParser {
             }
         }
 
+        if let Some((pos, _)) = Self::find_u32_property(&out[tail_offset..], b"Checksum") {
+            let computed = compute_campaign_chksm(new_payload);
+            write_u32_le(&mut out, tail_offset + pos, computed);
+        }
+
         Ok(out)
     }
 
     pub fn rebuild_gvas_from_template(
         template: &[u8],
-        new_envelope: &[u8],
-        plaintext: &[u8],
+        new_payload: &[u8],
+        plaintext: Option<&[u8]>,
     ) -> anyhow::Result<Vec<u8>> {
         if !Self::is_gvas(template) {
             return Err(anyhow::anyhow!("Template is not a valid GVAS save"));
@@ -319,6 +346,6 @@ impl GvasParser {
         let header = &template[..packed.offset];
         let tail = &template[packed.end()..];
 
-        Self::rebuild_from_header_tail(header, tail, new_envelope, Some(plaintext))
+        Self::rebuild_from_header_tail(header, tail, new_payload, plaintext)
     }
 }

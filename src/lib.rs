@@ -4,6 +4,9 @@ pub mod gvas;
 pub mod msd;
 
 pub use cli::Cli;
-pub use crypto::{compute_payload_crc, crc32, game_crc, Crypto};
+pub use crypto::{
+    compute_campaign_chksm, compute_payload_crc, crc32, game_crc, Crypto,
+    CAMPAIGN_CRC_SEED, CAMPAIGN_SALT,
+};
 pub use gvas::{FullSaveJson, GvasParser};
 pub use msd::{MsdManager, MsdManifest};

@@ -6,7 +6,7 @@ Toolkit & reference implementation for inspecting, decrypting, and repacking sav
 
 ### Foreword
 
-Coming from Ace Combat 7 (where saves were encrypted with an AES key derived from your SteamID and was under the file `ACE), Ace Combat 8 changed its save architecture:
+Coming from Ace Combat 7 (where saves were encrypted with an AES key derived from your SteamID and was under the file `ACE7Sav.sav`), Ace Combat 8 changed its save architecture:
 
 - **Campaign & System Saves (`Campaign.sav`, `System.sav`, `OnlineAccount.sav`)**:
   Standard UE5 GVAS saves. They have **zero SteamID locking or encryption**. You can share campaign saves directly between different accounts without any tool. Their `PackedData` property is an unencrypted byte blob storing serialized structs (unlocked aircraft tree, skins, medals, emblems, playtime).
